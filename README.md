@@ -5,7 +5,7 @@
 [![Crate License](https://img.shields.io/crates/l/unftp-site-hash.svg)](https://crates.io/crates/unftp-site-hash)
 
 Adds a `SITE HASH` command to [libunftp](https://github.com/bolcom/libunftp), letting FTP
-clients ask the server to compute a checksum of a file using SHA-256, SHA-1, MD5 or CRC32.
+clients request the server compute the hash files using SHA-256, SHA-1, MD5 or CRC32 algorithms.
 
 ## Getting started
 
@@ -42,13 +42,20 @@ pub async fn main() {
 Clients can then issue:
 
 ```text
-SITE HASH SHA-256 /path/to/file
-SITE HASH /path/to/file          (uses the handler's default algorithm, SHA-256)
+SITE HASH /path/to/file                            (uses the handler's default algorithm, SHA-256)
+SITE HASH -a MD5 /path/to/file                     (lower case works too: -a md5)
+SITE HASH -a sha1 "file with spaces.txt" other.bin
+SITE HASH -a crc32 -- -file-starting-with-dash
 ```
+
+The reply has one line per path, `<algorithm> <digest> <path>`. A path that cannot be read gets
+`<path>: <reason>` on its own line, and the reply code is 550 if any path failed.
 
 See the [examples](./examples) directory for a runnable server.
 
 ## Supported algorithms
+
+Names are case-insensitive, so `-a md5` and `-a MD5` are equivalent.
 
 - `SHA-256` (default)
 - `SHA-1`

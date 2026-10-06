@@ -2,7 +2,7 @@
 
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use unftp_core::auth::DefaultUser;
 use unftp_sbe_fs::Filesystem;
 use unftp_site_hash::HashCommandHandler;
@@ -13,10 +13,15 @@ const ABC_MD5: &str = "900150983cd24fb0d6963f7d28e17f72";
 const ABC_CRC32: &str = "352441c2";
 
 fn fixture_root() -> PathBuf {
-    let result = std::env::temp_dir().join(format!("unftp-site-hash-tests-{}", std::process::id()));
-    std::fs::create_dir_all(&result).unwrap();
-    std::fs::write(result.join("abc.txt"), b"abc").unwrap();
-    result
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let result = std::env::temp_dir().join(format!("unftp-site-hash-tests-{}", std::process::id()));
+        std::fs::create_dir_all(&result).unwrap();
+        std::fs::write(result.join("abc.txt"), b"abc").unwrap();
+        std::fs::write(result.join("with space.txt"), b"abc").unwrap();
+        result
+    })
+    .clone()
 }
 
 fn context(arguments: &str, user: Option<DefaultUser>) -> SiteCommandContext<Filesystem, DefaultUser> {
@@ -34,12 +39,25 @@ async fn run(arguments: &str) -> Reply {
     HashCommandHandler::default().handle(&context(arguments, Some(DefaultUser))).await
 }
 
+fn lines(lines: &[&str]) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
 #[tokio::test]
-async fn hashes_with_each_named_algorithm() {
-    let cases = [("SHA-256", ABC_SHA256), ("SHA-1", ABC_SHA1), ("MD5", ABC_MD5), ("CRC32", ABC_CRC32)];
-    for (name, digest) in cases {
-        let reply = run(&format!("{name} /abc.txt")).await;
-        let expected = Reply::new_with_string(ReplyCode::FileStatus, format!("{name} {digest} /abc.txt"));
+async fn hashes_with_each_named_algorithm_in_any_case() {
+    let cases = [
+        ("SHA-256", "SHA-256", ABC_SHA256),
+        ("sha-256", "SHA-256", ABC_SHA256),
+        ("SHA-1", "SHA-1", ABC_SHA1),
+        ("sha1", "SHA-1", ABC_SHA1),
+        ("MD5", "MD5", ABC_MD5),
+        ("md5", "MD5", ABC_MD5),
+        ("CRC32", "CRC32", ABC_CRC32),
+        ("crc32", "CRC32", ABC_CRC32),
+    ];
+    for (name, canonical, digest) in cases {
+        let reply = run(&format!("-a {name} /abc.txt")).await;
+        let expected = Reply::new_multiline(ReplyCode::FileStatus, lines(&[&format!("{canonical} {digest} /abc.txt")]));
         assert_eq!(reply, expected, "algorithm {name}");
     }
 }
@@ -47,29 +65,41 @@ async fn hashes_with_each_named_algorithm() {
 #[tokio::test]
 async fn uses_default_algorithm_when_none_is_named() {
     let reply = run("/abc.txt").await;
-    let expected = Reply::new_with_string(ReplyCode::FileStatus, format!("SHA-256 {ABC_SHA256} /abc.txt"));
+    let expected = Reply::new_multiline(ReplyCode::FileStatus, lines(&[&format!("SHA-256 {ABC_SHA256} /abc.txt")]));
     assert_eq!(reply, expected);
 }
 
 #[tokio::test]
-async fn rejects_missing_arguments() {
-    let reply = run("").await;
+async fn hashes_each_path_in_order_including_quoted_names() {
+    let reply = run(r#"-a md5 /abc.txt "/with space.txt""#).await;
+    let expected = Reply::new_multiline(
+        ReplyCode::FileStatus,
+        lines(&[&format!("MD5 {ABC_MD5} /abc.txt"), &format!("MD5 {ABC_MD5} /with space.txt")]),
+    );
+    assert_eq!(reply, expected);
+}
+
+#[tokio::test]
+async fn reports_each_failed_path_on_its_own_line() {
+    let reply = run("/abc.txt /does-not-exist.txt").await;
+    match reply {
+        Reply::MultiLine { code, lines } => {
+            assert_eq!(code, ReplyCode::FileError);
+            assert_eq!(lines.len(), 2);
+            assert_eq!(lines[0], format!("SHA-256 {ABC_SHA256} /abc.txt"));
+            assert!(lines[1].starts_with("/does-not-exist.txt: "), "unexpected line: {}", lines[1]);
+        }
+        other => panic!("expected a multi-line reply, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn rejects_missing_paths() {
+    let reply = run("-a md5").await;
     assert!(matches!(
         reply,
         Reply::CodeAndMsg {
             code: ReplyCode::ParameterSyntaxError,
-            ..
-        }
-    ));
-}
-
-#[tokio::test]
-async fn reports_missing_file() {
-    let reply = run("SHA-256 /does-not-exist.txt").await;
-    assert!(matches!(
-        reply,
-        Reply::CodeAndMsg {
-            code: ReplyCode::FileError,
             ..
         }
     ));

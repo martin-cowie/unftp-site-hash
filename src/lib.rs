@@ -1,5 +1,5 @@
-//! Adds a `SITE HASH` command to [libunftp], letting clients ask the server to compute a
-//! checksum of a file using SHA-256, SHA-1, MD5 or CRC32.
+//! Adds a `SITE HASH` command to [libunftp], letting clients ask the server to compute checksums
+//! of one or more files using SHA-256, SHA-1, MD5 or CRC32.
 //!
 //! Register [`HashCommandHandler`] with [`ServerBuilder::site_command`]:
 //!
@@ -13,8 +13,22 @@
 //!     .build();
 //! ```
 //!
-//! Clients then issue e.g. `SITE HASH SHA-256 /path/to/file`, or `SITE HASH /path/to/file` to
-//! use the handler's configured default algorithm.
+//! Clients then issue, for example:
+//!
+//! ```text
+//! SITE HASH file.txt
+//! SITE HASH -a MD5 file.txt "file with spaces.txt"
+//! SITE HASH -a sha-1 -- -leading-dash.txt
+//! ```
+//!
+//! Without `-a`, the handler's configured default algorithm is used. Algorithm names are
+//! case-insensitive, and lower-case names are as normal as upper-case ones: `-a md5` and
+//! `-a MD5` are equivalent. Arguments are split the way a POSIX shell splits them, so quotes keep
+//! names containing spaces together, and `--` ends the options so that a name starting with `-`
+//! can be given as a path.
+//!
+//! The reply has one line per path: `<algorithm> <digest> <path>`. A path that cannot be read
+//! gets `<path>: <reason>` instead, and the reply code is 550 if any path failed.
 //!
 //! [libunftp]: https://docs.rs/libunftp
 //! [`ServerBuilder::site_command`]: libunftp::ServerBuilder::site_command
@@ -29,6 +43,9 @@ use std::str::FromStr;
 use tokio::io::AsyncReadExt;
 use unftp_core::auth::UserDetail;
 use unftp_core::storage::{Metadata, StorageBackend};
+
+const MAX_PATHS: usize = 100;
+const USAGE: &str = "Usage: SITE HASH [-a SHA-256|SHA-1|MD5|CRC32] [--] <path>...";
 
 /// The hash algorithms that [`HashCommandHandler`] can compute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,7 +97,7 @@ impl FromStr for HashAlgorithm {
 /// A [`SiteCommandHandler`] that implements `SITE HASH`.
 ///
 /// Register an instance with [`ServerBuilder::site_command`](libunftp::ServerBuilder::site_command)
-/// under the name `"HASH"`.
+/// under the name `"HASH"`. Algorithm names given by clients are case-insensitive.
 #[derive(Debug, Clone, Copy)]
 pub struct HashCommandHandler {
     default_algorithm: HashAlgorithm,
@@ -94,21 +111,32 @@ impl HashCommandHandler {
         HashCommandHandler { default_algorithm }
     }
 
-    fn parse_arguments<'a>(&self, arguments: &'a str) -> Option<(HashAlgorithm, &'a str)> {
-        let arguments = arguments.trim();
-        if arguments.is_empty() {
-            return None;
-        }
-        match arguments.split_once(char::is_whitespace) {
-            Some((first, rest)) => match HashAlgorithm::from_str(first) {
-                Ok(algorithm) => {
-                    let path = rest.trim();
-                    if path.is_empty() { None } else { Some((algorithm, path)) }
+    fn parse_arguments(&self, arguments: &str) -> Result<Request, String> {
+        let words = shell_words::split(arguments).map_err(|err| format!("Could not parse arguments: {err}"))?;
+        let mut words = words.into_iter();
+        let mut algorithm = self.default_algorithm;
+        let mut paths = Vec::new();
+        while let Some(word) = words.next() {
+            match word.as_str() {
+                "--" => {
+                    paths.extend(words.by_ref());
+                    break;
                 }
-                Err(()) => Some((self.default_algorithm, arguments)),
-            },
-            None => Some((self.default_algorithm, arguments)),
+                "-a" => {
+                    let name = words.next().ok_or("-a needs an algorithm name")?;
+                    algorithm = name.parse().map_err(|()| format!("Unknown algorithm {name}"))?;
+                }
+                option if option.starts_with('-') => return Err(format!("Unknown option {option}")),
+                _ => paths.push(word),
+            }
         }
+        if paths.is_empty() {
+            return Err("No paths given".to_string());
+        }
+        if paths.len() > MAX_PATHS {
+            return Err(format!("At most {MAX_PATHS} paths may be given"));
+        }
+        Ok(Request { algorithm, paths })
     }
 }
 
@@ -117,6 +145,12 @@ impl Default for HashCommandHandler {
     fn default() -> Self {
         HashCommandHandler::new(HashAlgorithm::default())
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Request {
+    algorithm: HashAlgorithm,
+    paths: Vec<String>,
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -139,23 +173,17 @@ async fn read_chunks(mut reader: Box<dyn tokio::io::AsyncRead + Send + Sync + Un
     }
 }
 
+async fn digest<D: Digest + Send>(reader: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>) -> std::io::Result<String> {
+    let mut hasher = D::new();
+    read_chunks(reader, |chunk| hasher.update(chunk)).await?;
+    Ok(to_hex(&hasher.finalize()))
+}
+
 async fn compute_hash(algorithm: HashAlgorithm, reader: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>) -> std::io::Result<String> {
     let result = match algorithm {
-        HashAlgorithm::Sha256 => {
-            let mut hasher = Sha256::new();
-            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
-            to_hex(&hasher.finalize())
-        }
-        HashAlgorithm::Sha1 => {
-            let mut hasher = Sha1::new();
-            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
-            to_hex(&hasher.finalize())
-        }
-        HashAlgorithm::Md5 => {
-            let mut hasher = Md5::new();
-            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
-            to_hex(&hasher.finalize())
-        }
+        HashAlgorithm::Sha256 => digest::<Sha256>(reader).await?,
+        HashAlgorithm::Sha1 => digest::<Sha1>(reader).await?,
+        HashAlgorithm::Md5 => digest::<Md5>(reader).await?,
         HashAlgorithm::Crc32 => {
             let mut hasher = crc32fast::Hasher::new();
             read_chunks(reader, |chunk| hasher.update(chunk)).await?;
@@ -165,6 +193,17 @@ async fn compute_hash(algorithm: HashAlgorithm, reader: Box<dyn tokio::io::Async
     Ok(result)
 }
 
+async fn hash_file<Storage, User>(context: &SiteCommandContext<Storage, User>, user: &User, algorithm: HashAlgorithm, path: &str) -> Result<String, String>
+where
+    Storage: StorageBackend<User> + 'static,
+    Storage::Metadata: Metadata,
+    User: UserDetail + 'static,
+{
+    let reader = context.storage.get(user, path, 0).await.map_err(|err| format!("{path}: {err}"))?;
+    let digest = compute_hash(algorithm, reader).await.map_err(|err| format!("{path}: Failed to read: {err}"))?;
+    Ok(format!("{algorithm} {digest} {path}"))
+}
+
 #[async_trait]
 impl<Storage, User> SiteCommandHandler<Storage, User> for HashCommandHandler
 where
@@ -172,29 +211,33 @@ where
     Storage::Metadata: Metadata,
     User: UserDetail + 'static,
 {
-    /// Replies to `SITE HASH` with the digest of the file named in the arguments.
+    /// Replies to `SITE HASH` with one line per path named in the arguments.
     ///
-    /// Failures are reported to the client as FTP replies rather than returned as errors:
-    /// missing arguments give a syntax error, an unauthenticated session gives `NotLoggedIn`,
-    /// and a file that cannot be opened or read gives `FileError`.
+    /// The reply code is 213 when every path was hashed, and 550 when any path failed; each
+    /// failed path still gets its own line. Malformed arguments give a syntax error, and an
+    /// unauthenticated session gives `NotLoggedIn`.
     async fn handle(&self, context: &SiteCommandContext<Storage, User>) -> Reply {
-        let Some((algorithm, path)) = self.parse_arguments(&context.arguments) else {
-            return Reply::new(ReplyCode::ParameterSyntaxError, "Usage: SITE HASH [algorithm] <path>");
+        let request = match self.parse_arguments(&context.arguments) {
+            Ok(request) => request,
+            Err(problem) => return Reply::new_with_string(ReplyCode::ParameterSyntaxError, format!("{problem}. {USAGE}")),
         };
 
         let Some(user) = context.user.as_ref() else {
             return Reply::new(ReplyCode::NotLoggedIn, "Please open a new connection to re-authenticate");
         };
 
-        let reader = match context.storage.get(user, path, 0).await {
-            Ok(reader) => reader,
-            Err(err) => return Reply::new_with_string(ReplyCode::FileError, err.to_string()),
-        };
-
-        match compute_hash(algorithm, reader).await {
-            Ok(digest) => Reply::new_with_string(ReplyCode::FileStatus, format!("{} {} {}", algorithm, digest, path)),
-            Err(err) => Reply::new_with_string(ReplyCode::FileError, format!("Failed to read {}: {}", path, err)),
+        let mut results = Vec::with_capacity(request.paths.len());
+        for path in &request.paths {
+            results.push(hash_file(context, user, request.algorithm, path).await);
         }
+
+        let code = if results.iter().all(Result::is_ok) {
+            ReplyCode::FileStatus
+        } else {
+            ReplyCode::FileError
+        };
+        let lines = results.into_iter().map(|result| result.unwrap_or_else(|line| line));
+        Reply::new_multiline(code, lines)
     }
 }
 
@@ -202,24 +245,62 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_algorithm_and_path() {
-        let handler = HashCommandHandler::default();
-        assert_eq!(handler.parse_arguments("SHA-1 /foo/bar.txt"), Some((HashAlgorithm::Sha1, "/foo/bar.txt")));
-        assert_eq!(handler.parse_arguments("md5 /foo/bar.txt"), Some((HashAlgorithm::Md5, "/foo/bar.txt")));
+    fn parse(arguments: &str) -> Result<Request, String> {
+        HashCommandHandler::default().parse_arguments(arguments)
+    }
+
+    fn request(algorithm: HashAlgorithm, paths: &[&str]) -> Request {
+        Request {
+            algorithm,
+            paths: paths.iter().map(|path| path.to_string()).collect(),
+        }
     }
 
     #[test]
-    fn falls_back_to_default_algorithm_when_only_a_path_is_given() {
-        let handler = HashCommandHandler::default();
-        assert_eq!(handler.parse_arguments("/foo/bar.txt"), Some((HashAlgorithm::Sha256, "/foo/bar.txt")));
+    fn uses_default_algorithm_without_option() {
+        assert_eq!(parse("/foo/bar.txt"), Ok(request(HashAlgorithm::Sha256, &["/foo/bar.txt"])));
     }
 
     #[test]
-    fn rejects_empty_arguments() {
-        let handler = HashCommandHandler::default();
-        assert_eq!(handler.parse_arguments(""), None);
-        assert_eq!(handler.parse_arguments("   "), None);
+    fn accepts_algorithm_option_in_any_case() {
+        assert_eq!(parse("-a SHA-1 /foo"), Ok(request(HashAlgorithm::Sha1, &["/foo"])));
+        assert_eq!(parse("-a md5 /foo"), Ok(request(HashAlgorithm::Md5, &["/foo"])));
+    }
+
+    #[test]
+    fn accepts_many_paths_including_quoted_names() {
+        assert_eq!(
+            parse(r#"-a crc32 a.txt "b c.txt" 'd e.txt'"#),
+            Ok(request(HashAlgorithm::Crc32, &["a.txt", "b c.txt", "d e.txt"]))
+        );
+    }
+
+    #[test]
+    fn treats_everything_after_double_dash_as_paths() {
+        assert_eq!(parse("-- -a"), Ok(request(HashAlgorithm::Sha256, &["-a"])));
+        assert_eq!(parse("-a md5 -- MD5"), Ok(request(HashAlgorithm::Md5, &["MD5"])));
+    }
+
+    #[test]
+    fn rejects_missing_paths() {
+        assert!(parse("").is_err());
+        assert!(parse("-a md5").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_algorithm_unknown_option_and_unbalanced_quotes() {
+        assert!(parse("-a sha999 /foo").is_err());
+        assert!(parse("-a").is_err());
+        assert!(parse("-x /foo").is_err());
+        assert!(parse("\"unterminated").is_err());
+    }
+
+    #[test]
+    fn rejects_more_than_the_maximum_number_of_paths() {
+        let at_limit = vec!["/f"; MAX_PATHS].join(" ");
+        let over_limit = vec!["/f"; MAX_PATHS + 1].join(" ");
+        assert!(parse(&at_limit).is_ok());
+        assert!(parse(&over_limit).is_err());
     }
 
     #[test]

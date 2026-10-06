@@ -21,6 +21,7 @@ libunftp = "0.23.1"
 md-5 = "0.11.0"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
+shell-words = "1.1.1"
 tokio = { version = "1.53.1", features = ["io-util"] }
 unftp-core = "0.1.0"
 

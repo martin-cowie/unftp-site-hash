@@ -1,7 +1,7 @@
 //! A filesystem-backed FTP server with `SITE HASH` enabled.
 //!
 //! Run with `cargo run --example basic`, then e.g.:
-//! `curl -s ftp://127.0.0.1:2121/ -Q 'SITE HASH SHA-256 some-file.txt'`
+//! `curl -s ftp://127.0.0.1:2121/ -Q 'SITE HASH -a sha-256 some-file.txt'`
 
 use libunftp::ServerBuilder;
 use unftp_sbe_fs::Filesystem;
