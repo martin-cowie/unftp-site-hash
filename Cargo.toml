@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Adds a SITE HASH command to libunftp, supporting SHA-256, SHA-1, MD5 and CRC32 file hashing"
 authors = ["Martin Cowie <martinjcowie@gmail.com>"]
 edition = "2024"
+rust-version = "1.89"
 license = "Apache-2.0"
 keywords = ["libunftp", "unftp", "ftp", "ftps", "hash"]
 categories = ["network-programming"]
@@ -11,24 +12,22 @@ documentation = "https://docs.rs/unftp-site-hash"
 homepage = "https://github.com/martin-cowie/unftp-site-hash"
 repository = "https://github.com/martin-cowie/unftp-site-hash"
 readme = "README.md"
+exclude = [".github/", "rustfmt.toml"]
 
-# NOTE: libunftp's `SiteCommandHandler` extension point (what this crate hooks into) has not
-# been released to crates.io yet, it only exists on the `master` branch as of 2026-07-26. Once
-# a release containing it ships, switch these back to version dependencies (libunftp = "0.24",
-# unftp-core = "0.1") and drop the `[patch]` section below.
 [dependencies]
 async-trait = "0.1.91"
 crc32fast = "1.5.0"
-libunftp = { git = "https://github.com/bolcom/libunftp", branch = "master" }
+libunftp = "0.23.1"
 md-5 = "0.11.0"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
 tokio = { version = "1.53.1", features = ["io-util"] }
-unftp-core = { git = "https://github.com/bolcom/libunftp", branch = "master" }
+unftp-core = "0.1.0"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
-unftp-sbe-fs = { git = "https://github.com/bolcom/libunftp", branch = "master" }
+slog = "2.8.2"
+unftp-sbe-fs = "0.4.0"
 
 [lints.rust]
 missing_docs = "deny"

@@ -7,19 +7,14 @@
 Adds a `SITE HASH` command to [libunftp](https://github.com/bolcom/libunftp), letting FTP
 clients ask the server to compute a checksum of a file using SHA-256, SHA-1, MD5 or CRC32.
 
-> **Status:** this crate depends on libunftp's `SiteCommandHandler` extension point, which as of
-> 2026-07-26 is only available on libunftp's `master` branch and hasn't been published to
-> crates.io yet. Once a release containing it ships, this crate's dependencies will move from a
-> git reference to a version pin.
-
 ## Getting started
 
 Add the crate to your project's dependencies in `Cargo.toml`:
 
 ```toml
 [dependencies]
-libunftp = { git = "https://github.com/bolcom/libunftp", branch = "master" }
-unftp-sbe-fs = { git = "https://github.com/bolcom/libunftp", branch = "master" }
+libunftp = "0.23"
+unftp-sbe-fs = "0.4"
 unftp-site-hash = "0.1"
 tokio = { version = "1", features = ["full"] }
 ```
@@ -59,6 +54,10 @@ See the [examples](./examples) directory for a runnable server.
 - `SHA-1`
 - `MD5`
 - `CRC32`
+
+## Minimum supported Rust version
+
+Rust 1.89 or later.
 
 ## License
 
