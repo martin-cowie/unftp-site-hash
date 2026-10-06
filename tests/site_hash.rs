@@ -13,10 +13,10 @@ const ABC_MD5: &str = "900150983cd24fb0d6963f7d28e17f72";
 const ABC_CRC32: &str = "352441c2";
 
 fn fixture_root() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("unftp-site-hash-tests-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("abc.txt"), b"abc").unwrap();
-    root
+    let result = std::env::temp_dir().join(format!("unftp-site-hash-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&result).unwrap();
+    std::fs::write(result.join("abc.txt"), b"abc").unwrap();
+    result
 }
 
 fn context(arguments: &str, user: Option<DefaultUser>) -> SiteCommandContext<Filesystem, DefaultUser> {

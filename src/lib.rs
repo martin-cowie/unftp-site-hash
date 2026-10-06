@@ -45,6 +45,7 @@ pub enum HashAlgorithm {
 }
 
 impl fmt::Display for HashAlgorithm {
+    /// Writes the algorithm's name as used in `SITE HASH` replies, such as `SHA-256`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             HashAlgorithm::Sha256 => "SHA-256",
@@ -59,6 +60,12 @@ impl fmt::Display for HashAlgorithm {
 impl FromStr for HashAlgorithm {
     type Err = ();
 
+    /// Parses an algorithm name, ignoring case and any `-` or `_` separators, so `sha-256`
+    /// and `SHA256` both parse.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` if `s` does not name a supported algorithm.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_uppercase().replace(['-', '_'], "").as_str() {
             "SHA256" => Ok(HashAlgorithm::Sha256),
@@ -80,7 +87,9 @@ pub struct HashCommandHandler {
 }
 
 impl HashCommandHandler {
-    /// Creates a handler that falls back to `default_algorithm` when the client doesn't name one.
+    /// Creates a handler.
+    ///
+    /// `default_algorithm` is used when the client names no algorithm. Returns the new handler.
     pub fn new(default_algorithm: HashAlgorithm) -> Self {
         HashCommandHandler { default_algorithm }
     }
@@ -104,6 +113,7 @@ impl HashCommandHandler {
 }
 
 impl Default for HashCommandHandler {
+    /// Returns a handler that uses SHA-256 when the client names no algorithm.
     fn default() -> Self {
         HashCommandHandler::new(HashAlgorithm::default())
     }
@@ -111,62 +121,48 @@ impl Default for HashCommandHandler {
 
 fn to_hex(bytes: &[u8]) -> String {
     use fmt::Write;
-    let mut hex = String::with_capacity(bytes.len() * 2);
+    let mut result = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+        write!(result, "{byte:02x}").expect("writing to a String cannot fail");
     }
-    hex
+    result
 }
 
-async fn compute_hash(algorithm: HashAlgorithm, mut reader: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>) -> std::io::Result<String> {
+async fn read_chunks(mut reader: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>, mut consume: impl FnMut(&[u8]) + Send) -> std::io::Result<()> {
     let mut buffer = [0u8; 8192];
-    let digest = match algorithm {
+    loop {
+        let n = reader.read(&mut buffer).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        consume(&buffer[..n]);
+    }
+}
+
+async fn compute_hash(algorithm: HashAlgorithm, reader: Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>) -> std::io::Result<String> {
+    let result = match algorithm {
         HashAlgorithm::Sha256 => {
             let mut hasher = Sha256::new();
-            loop {
-                let n = reader.read(&mut buffer).await?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..n]);
-            }
+            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
             to_hex(&hasher.finalize())
         }
         HashAlgorithm::Sha1 => {
             let mut hasher = Sha1::new();
-            loop {
-                let n = reader.read(&mut buffer).await?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..n]);
-            }
+            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
             to_hex(&hasher.finalize())
         }
         HashAlgorithm::Md5 => {
             let mut hasher = Md5::new();
-            loop {
-                let n = reader.read(&mut buffer).await?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..n]);
-            }
+            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
             to_hex(&hasher.finalize())
         }
         HashAlgorithm::Crc32 => {
             let mut hasher = crc32fast::Hasher::new();
-            loop {
-                let n = reader.read(&mut buffer).await?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..n]);
-            }
+            read_chunks(reader, |chunk| hasher.update(chunk)).await?;
             format!("{:08x}", hasher.finalize())
         }
     };
-    Ok(digest)
+    Ok(result)
 }
 
 #[async_trait]
@@ -176,6 +172,11 @@ where
     Storage::Metadata: Metadata,
     User: UserDetail + 'static,
 {
+    /// Replies to `SITE HASH` with the digest of the file named in the arguments.
+    ///
+    /// Failures are reported to the client as FTP replies rather than returned as errors:
+    /// missing arguments give a syntax error, an unauthenticated session gives `NotLoggedIn`,
+    /// and a file that cannot be opened or read gives `FileError`.
     async fn handle(&self, context: &SiteCommandContext<Storage, User>) -> Reply {
         let Some((algorithm, path)) = self.parse_arguments(&context.arguments) else {
             return Reply::new(ReplyCode::ParameterSyntaxError, "Usage: SITE HASH [algorithm] <path>");
