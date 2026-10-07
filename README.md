@@ -1,5 +1,6 @@
 # unftp-site-hash
 
+[![CI](https://github.com/martin-cowie/unftp-site-hash/actions/workflows/ci.yml/badge.svg)](https://github.com/martin-cowie/unftp-site-hash/actions/workflows/ci.yml)
 [![Crate Version](https://img.shields.io/crates/v/unftp-site-hash.svg)](https://crates.io/crates/unftp-site-hash)
 [![API Docs](https://docs.rs/unftp-site-hash/badge.svg)](https://docs.rs/unftp-site-hash)
 [![Crate License](https://img.shields.io/crates/l/unftp-site-hash.svg)](https://crates.io/crates/unftp-site-hash)
