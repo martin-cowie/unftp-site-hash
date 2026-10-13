@@ -12,7 +12,7 @@ documentation = "https://docs.rs/unftp-site-hash"
 homepage = "https://github.com/martin-cowie/unftp-site-hash"
 repository = "https://github.com/martin-cowie/unftp-site-hash"
 readme = "README.md"
-exclude = [".github/", "rustfmt.toml"]
+exclude = [".github/", "rustfmt.toml", "RELEASING.md"]
 
 [dependencies]
 async-trait = "0.1.91"
