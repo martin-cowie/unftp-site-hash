@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2016-10-13
 
 - Initial release: `HashCommandHandler` implementing `SITE HASH` for libunftp, supporting
   SHA-256, SHA-1, MD5 and CRC32.
